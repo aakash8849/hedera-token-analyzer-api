@@ -2,6 +2,7 @@ import { join } from 'path';
 import { ensureDirectoryExists, writeCSV, readCSV } from '../utils/fileSystem.js';
 import { getTokenInfo, fetchHolders } from '../services/tokenService.js';
 import { fetchTransactions } from '../services/transactionService.js';
+import { formatTokenAmount } from '../utils/formatters.js';
 import { config } from '../../config/config.js';
 
 const BASE_STORAGE_DIR = process.env.NODE_ENV === 'production' 
@@ -16,77 +17,65 @@ export class TokenAnalyzer {
         this.tokenDir = join(BASE_STORAGE_DIR, `${tokenId}_token_data`);
     }
 
-   async analyze() {
-    try {
-        console.log(`Starting analysis for token ${this.tokenId}`);
-        await ensureDirectoryExists(this.tokenDir);
-        console.log(`Created directory: ${this.tokenDir}`);
-        
-        // Get token info
-        this.tokenInfo = await getTokenInfo(this.tokenId);
-        console.log(`Retrieved token info: ${this.tokenInfo.name} (${this.tokenInfo.symbol})`);
-        
-        // Fetch and save holders
-        console.log('Fetching holders...');
-        const holders = await fetchHolders(this.tokenId);
-        await this.saveHolders(holders);
-        console.log(`Saved ${holders.length} holders to CSV`);
-        
-        // Fetch and save transactions
-        console.log('Fetching transactions...');
-        const transactions = [];
-        const totalHolders = holders.length;
-        
-        for (let i = 0; i < holders.length; i += config.rateLimiting.holderBatchSize) {
-            const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
-            console.log(`Processing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, totalHolders)} of ${totalHolders}`);
+    async analyze() {
+        try {
+            console.log(`Starting analysis for token ${this.tokenId}`);
+            await ensureDirectoryExists(this.tokenDir);
+            console.log(`Created directory: ${this.tokenDir}`);
             
-            const batchTransactions = await Promise.all(
-                batch.map(holder => 
-                    fetchTransactions(
-                        holder.account,
-                        this.tokenId,
-                        this.tokenInfo,
-                        this.sixMonthsAgoTimestamp
+            // Get token info
+            this.tokenInfo = await getTokenInfo(this.tokenId);
+            console.log(`Retrieved token info: ${this.tokenInfo.name} (${this.tokenInfo.symbol})`);
+            
+            // Fetch and save holders
+            console.log('Fetching holders...');
+            const holders = await fetchHolders(this.tokenId);
+            await this.saveHolders(holders);
+            
+            // Fetch and save transactions
+            const transactions = [];
+            for (let i = 0; i < holders.length; i += config.rateLimiting.holderBatchSize) {
+                const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
+                console.log(`Processing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, holders.length)} of ${holders.length}`);
+                
+                const batchTransactions = await Promise.all(
+                    batch.map(holder => 
+                        fetchTransactions(
+                            holder.account,
+                            this.tokenId,
+                            this.tokenInfo,
+                            this.sixMonthsAgoTimestamp
+                        )
                     )
-                )
-            );
+                );
+                transactions.push(...batchTransactions.flat());
+                await this.saveTransactions(transactions);
+                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
+            }
+
+            console.log(`Analysis complete! Found ${holders.length} holders and ${transactions.length} transactions`);
             
-            const newTransactions = batchTransactions.flat();
-            transactions.push(...newTransactions);
-            console.log(`Found ${newTransactions.length} transactions in this batch`);
-            
-            await this.saveTransactions(transactions);
-            console.log(`Saved ${transactions.length} total transactions to CSV`);
-            
-            // Add delay between batches
-            await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
+            return {
+                tokenInfo: this.tokenInfo,
+                holders: holders.length,
+                transactions: transactions.length,
+                outputDir: this.tokenDir
+            };
+        } catch (error) {
+            console.error('Analysis failed:', error);
+            throw error;
         }
-
-        console.log('Analysis complete!');
-        return {
-            tokenInfo: this.tokenInfo,
-            holders: holders.length,
-            transactions: transactions.length,
-            outputDir: this.tokenDir
-        };
-    } catch (error) {
-        console.error('Analysis failed:', error);
-        throw error;
     }
-}
 
-   async saveHolders(holders) {
+    async saveHolders(holders) {
         const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
         const holdersData = holders.map(holder => [
             holder.account,
-            formatTokenAmount(holder.balance, this.tokenInfo.decimals) // Apply decimals conversion
+            formatTokenAmount(holder.balance, this.tokenInfo.decimals)
         ]);
         
-        console.log('Saving holders with proper decimal formatting...'); // Debug log
-        console.log('Sample holder data:', holdersData[0]); // Debug log
-       
         await writeCSV(holdersPath, ['Account', 'Balance'], holdersData);
+        console.log(`Saved ${holders.length} holders to ${holdersPath}`);
     }
 
     async saveTransactions(transactions) {
@@ -116,6 +105,7 @@ export class TokenAnalyzer {
         ]);
 
         await writeCSV(transactionsPath, headers, rows);
+        console.log(`Saved ${transactions.length} transactions to ${transactionsPath}`);
     }
 
     async getVisualizationData() {
@@ -127,10 +117,7 @@ export class TokenAnalyzer {
                 readCSV(holdersPath),
                 readCSV(transactionsPath)
             ]);
-             console.log('Retrieved visualization data'); // Debug log
-            console.log('Holders data size:', holdersData.split('\n').length);
-            console.log('Transactions data size:', transactionsData.split('\n').length);
-           
+
             return {
                 holders: holdersData,
                 transactions: transactionsData
