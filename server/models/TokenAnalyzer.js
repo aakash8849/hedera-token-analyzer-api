@@ -1,0 +1,120 @@
+import { join } from 'path';
+import { ensureDirectoryExists, writeCSV, readCSV } from '../utils/fileSystem.js';
+import { getTokenInfo, fetchHolders } from '../services/tokenService.js';
+import { fetchTransactions } from '../services/transactionService.js';
+import { config } from '../../config/config.js';
+
+const BASE_STORAGE_DIR = process.env.NODE_ENV === 'production' 
+    ? (process.env.STORAGE_DIR || '/data')
+    : 'token_data';
+
+export class TokenAnalyzer {
+    constructor(tokenId) {
+        this.tokenId = tokenId;
+        this.tokenInfo = null;
+        this.sixMonthsAgoTimestamp = (Date.now() - (6 * 30 * 24 * 60 * 60 * 1000)) / 1000;
+        this.tokenDir = join(BASE_STORAGE_DIR, `${tokenId}_token_data`);
+    }
+
+    async analyze() {
+        try {
+            await ensureDirectoryExists(this.tokenDir);
+            
+            // Get token info
+            this.tokenInfo = await getTokenInfo(this.tokenId);
+            
+            // Fetch and save holders
+            const holders = await fetchHolders(this.tokenId);
+            await this.saveHolders(holders);
+            
+            // Fetch and save transactions
+            const transactions = [];
+            for (let i = 0; i < holders.length; i += 25) {
+                const batch = holders.slice(i, i + 25);
+                const batchTransactions = await Promise.all(
+                    batch.map(holder => 
+                        fetchTransactions(
+                            holder.account,
+                            this.tokenId,
+                            this.tokenInfo,
+                            this.sixMonthsAgoTimestamp
+                        )
+                    )
+                );
+                transactions.push(...batchTransactions.flat());
+                await this.saveTransactions(transactions);
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+
+            return {
+                tokenInfo: this.tokenInfo,
+                holders: holders.length,
+                transactions: transactions.length,
+                outputDir: this.tokenDir
+            };
+        } catch (error) {
+            console.error('Analysis failed:', error);
+            throw error;
+        }
+    }
+
+    async saveHolders(holders) {
+        const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
+        const holdersData = holders.map(holder => [
+            holder.account,
+            holder.balance
+        ]);
+        await writeCSV(holdersPath, ['Account', 'Balance'], holdersData);
+    }
+
+    async saveTransactions(transactions) {
+        const transactionsPath = join(this.tokenDir, `${this.tokenId}_transactions.csv`);
+        const headers = [
+            'Timestamp',
+            'Transaction ID',
+            'Sender Account',
+            'Total Sent Amount',
+            'Receiver Account',
+            'Receiver Amount',
+            'Token Symbol',
+            'Memo',
+            'Fee (HBAR)'
+        ];
+
+        const rows = transactions.map(tx => [
+            tx.timestamp,
+            tx.transaction_id,
+            tx.sender_account,
+            tx.sender_amount,
+            tx.receiver_account,
+            tx.receiver_amount,
+            tx.token_symbol,
+            tx.memo,
+            tx.fee_hbar
+        ]);
+
+        await writeCSV(transactionsPath, headers, rows);
+    }
+
+    async getVisualizationData() {
+        try {
+            const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
+            const transactionsPath = join(this.tokenDir, `${this.tokenId}_transactions.csv`);
+
+            const [holdersData, transactionsData] = await Promise.all([
+                readCSV(holdersPath),
+                readCSV(transactionsPath)
+            ]);
+
+            return {
+                holders: holdersData,
+                transactions: transactionsData
+            };
+        } catch (error) {
+            if (error.message === 'File not found') {
+                throw new Error('Data not found. Please analyze the token first.');
+            }
+            throw error;
+        }
+    }
+}

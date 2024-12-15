@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: hedera-token-analyzer-api
+    env: node
+    buildCommand: npm install
+    startCommand: node server/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: STORAGE_DIR
+        value: /data
+      - key: FRONTEND_URL
+        value: https://hedera-token-analyzer.netlify.app
+    disk:
+      name: token-data
+      mountPath: /data
+      sizeGB: 1
