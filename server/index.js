@@ -41,6 +41,14 @@ app.get('/health', (req, res) => {
 // Mount API routes under /api
 app.use('/api', apiRoutes);
 
+// Add a catch-all route handler for undefined routes
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Not Found',
+    path: req.path
+  });
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
