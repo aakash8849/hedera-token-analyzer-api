@@ -44,7 +44,7 @@ app.get('/health', (req, res) => {
 });
 
 // Mount API routes under /api
-app.use('/api', apiRoutes);
+app.use('/', apiRoutes);
 
 // Add a catch-all route handler for undefined routes
 app.use((req, res) => {
