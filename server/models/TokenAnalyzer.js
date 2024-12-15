@@ -16,47 +16,65 @@ export class TokenAnalyzer {
         this.tokenDir = join(BASE_STORAGE_DIR, `${tokenId}_token_data`);
     }
 
-    async analyze() {
-        try {
-            await ensureDirectoryExists(this.tokenDir);
+   async analyze() {
+    try {
+        console.log(`Starting analysis for token ${this.tokenId}`);
+        await ensureDirectoryExists(this.tokenDir);
+        console.log(`Created directory: ${this.tokenDir}`);
+        
+        // Get token info
+        this.tokenInfo = await getTokenInfo(this.tokenId);
+        console.log(`Retrieved token info: ${this.tokenInfo.name} (${this.tokenInfo.symbol})`);
+        
+        // Fetch and save holders
+        console.log('Fetching holders...');
+        const holders = await fetchHolders(this.tokenId);
+        await this.saveHolders(holders);
+        console.log(`Saved ${holders.length} holders to CSV`);
+        
+        // Fetch and save transactions
+        console.log('Fetching transactions...');
+        const transactions = [];
+        const totalHolders = holders.length;
+        
+        for (let i = 0; i < holders.length; i += config.rateLimiting.holderBatchSize) {
+            const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
+            console.log(`Processing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, totalHolders)} of ${totalHolders}`);
             
-            // Get token info
-            this.tokenInfo = await getTokenInfo(this.tokenId);
-            
-            // Fetch and save holders
-            const holders = await fetchHolders(this.tokenId);
-            await this.saveHolders(holders);
-            
-            // Fetch and save transactions
-            const transactions = [];
-            for (let i = 0; i < holders.length; i += 25) {
-                const batch = holders.slice(i, i + 25);
-                const batchTransactions = await Promise.all(
-                    batch.map(holder => 
-                        fetchTransactions(
-                            holder.account,
-                            this.tokenId,
-                            this.tokenInfo,
-                            this.sixMonthsAgoTimestamp
-                        )
+            const batchTransactions = await Promise.all(
+                batch.map(holder => 
+                    fetchTransactions(
+                        holder.account,
+                        this.tokenId,
+                        this.tokenInfo,
+                        this.sixMonthsAgoTimestamp
                     )
-                );
-                transactions.push(...batchTransactions.flat());
-                await this.saveTransactions(transactions);
-                await new Promise(resolve => setTimeout(resolve, 200));
-            }
-
-            return {
-                tokenInfo: this.tokenInfo,
-                holders: holders.length,
-                transactions: transactions.length,
-                outputDir: this.tokenDir
-            };
-        } catch (error) {
-            console.error('Analysis failed:', error);
-            throw error;
+                )
+            );
+            
+            const newTransactions = batchTransactions.flat();
+            transactions.push(...newTransactions);
+            console.log(`Found ${newTransactions.length} transactions in this batch`);
+            
+            await this.saveTransactions(transactions);
+            console.log(`Saved ${transactions.length} total transactions to CSV`);
+            
+            // Add delay between batches
+            await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
         }
+
+        console.log('Analysis complete!');
+        return {
+            tokenInfo: this.tokenInfo,
+            holders: holders.length,
+            transactions: transactions.length,
+            outputDir: this.tokenDir
+        };
+    } catch (error) {
+        console.error('Analysis failed:', error);
+        throw error;
     }
+}
 
     async saveHolders(holders) {
         const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
