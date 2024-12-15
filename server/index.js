@@ -13,10 +13,7 @@ const app = express();
 
 // Configure CORS with specific origins
 app.use(cors({
-  origin: [
-    'https://hedera-token-analyzer.netlify.app',
-    'http://localhost:5173' // For local development
-  ],
+  origin: config.corsOrigins,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type']
 }));
@@ -24,9 +21,7 @@ app.use(cors({
 app.use(express.json());
 
 // Ensure storage directory exists
-const BASE_STORAGE_DIR = process.env.NODE_ENV === 'production' 
-  ? (process.env.STORAGE_DIR || '/data')
-  : join(__dirname, '..', 'token_data');
+const BASE_STORAGE_DIR = config.storage.baseDir;
 
 try {
   await fs.access(BASE_STORAGE_DIR);
@@ -43,17 +38,17 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Mount API routes
+// Mount API routes under /api
 app.use('/api', apiRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ error: 'Something broke!' });
+  res.status(500).json({ error: err.message || 'Something broke!' });
 });
 
-// Use the port that Render expects (10000)
-const PORT = process.env.PORT || 10000;
+// Use the port from config
+const PORT = config.port;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log('Environment:', process.env.NODE_ENV);
