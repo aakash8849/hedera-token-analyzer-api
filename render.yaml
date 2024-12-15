@@ -11,8 +11,22 @@ services:
         value: 10000
       - key: STORAGE_DIR
         value: /data
-      - key: FRONTEND_URL
+      - key: MIRROR_NODE_URL
+        value: https://mainnet-public.mirrornode.hedera.com/api/v1
+      - key: MIRROR_NODE_TIMEOUT
+        value: 30000
+      - key: MAX_RETRIES
+        value: 3
+      - key: ALLOWED_ORIGINS
         value: https://hedera-token-analyzer.netlify.app
+      - key: RATE_LIMIT
+        value: 150
+      - key: BATCH_SIZE
+        value: 50
+      - key: HOLDER_BATCH_SIZE
+        value: 25
+      - key: PROCESSING_DELAY
+        value: 200
     disk:
       name: token-data
       mountPath: /data
