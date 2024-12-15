@@ -76,12 +76,16 @@ export class TokenAnalyzer {
     }
 }
 
-    async saveHolders(holders) {
+   async saveHolders(holders) {
         const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
         const holdersData = holders.map(holder => [
             holder.account,
-            holder.balance
+            formatTokenAmount(holder.balance, this.tokenInfo.decimals) // Apply decimals conversion
         ]);
+        
+        console.log('Saving holders with proper decimal formatting...'); // Debug log
+        console.log('Sample holder data:', holdersData[0]); // Debug log
+       
         await writeCSV(holdersPath, ['Account', 'Balance'], holdersData);
     }
 
@@ -123,7 +127,10 @@ export class TokenAnalyzer {
                 readCSV(holdersPath),
                 readCSV(transactionsPath)
             ]);
-
+             console.log('Retrieved visualization data'); // Debug log
+            console.log('Holders data size:', holdersData.split('\n').length);
+            console.log('Transactions data size:', transactionsData.split('\n').length);
+           
             return {
                 holders: holdersData,
                 transactions: transactionsData
