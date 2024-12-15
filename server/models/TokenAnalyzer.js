@@ -118,6 +118,92 @@ export class TokenAnalyzer {
                 readCSV(transactionsPath)
             ]);
 
+             // Process holders data
+            const holders = holdersData.split('\n')
+                .slice(1) // Skip header
+                .filter(line => line.trim())
+                .map(line => {
+                    const [account, balance] = line.split(',');
+                    return {
+                        account,
+                        balance: parseFloat(balance) || 0
+                    };
+                });
+
+            // Process transactions data
+            const transactions = transactionsData.split('\n')
+                .slice(1) // Skip header
+                .filter(line => line.trim())
+                .map(line => {
+                    const [
+                        timestamp,
+                        transaction_id,
+                        sender_account,
+                        sender_amount,
+                        receiver_account,
+                        receiver_amount,
+                        token_symbol,
+                        memo,
+                        fee_hbar
+                    ] = line.split(',');
+
+                    return {
+                        timestamp: new Date(timestamp),
+                        transaction_id,
+                        sender_account,
+                        sender_amount: parseFloat(sender_amount) || 0,
+                        receiver_account,
+                        receiver_amount: parseFloat(receiver_amount) || 0,
+                        token_symbol,
+                        memo,
+                        fee_hbar: parseFloat(fee_hbar) || 0
+                    };
+                });
+
+            // Calculate metrics for visualization
+            const maxBalance = Math.max(...holders.map(h => h.balance));
+            const minBalance = Math.min(...holders.map(h => h.balance));
+
+            // Create nodes from holders
+            const nodes = holders.map(holder => ({
+                id: holder.account,
+                value: holder.balance,
+                radius: Math.sqrt(holder.balance / maxBalance) * 50 + 5, // Scale node size
+                category: this.getHolderCategory(holder.balance, maxBalance)
+            }));
+
+            // Create links from transactions
+            const links = transactions.map(tx => ({
+                source: tx.sender_account,
+                target: tx.receiver_account,
+                value: tx.receiver_amount,
+                timestamp: tx.timestamp
+            }));
+
+            return {
+                nodes,
+                links,
+                metrics: {
+                    totalHolders: holders.length,
+                    totalTransactions: transactions.length,
+                    maxBalance,
+                    minBalance,
+                    tokenInfo: this.tokenInfo
+                }
+            };
+        } catch (error) {
+            console.error('Visualization data processing error:', error);
+            throw new Error('Failed to process visualization data: ' + error.message);
+        }
+    }
+
+    getHolderCategory(balance, maxBalance) {
+        const ratio = balance / maxBalance;
+        if (ratio > 0.1) return 'large';
+        if (ratio > 0.01) return 'medium';
+        return 'small';
+    }
+}
             return {
                 holders: holdersData,
                 transactions: transactionsData
