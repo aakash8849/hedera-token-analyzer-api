@@ -29,6 +29,11 @@ try {
   await fs.mkdir(BASE_STORAGE_DIR, { recursive: true });
 }
 
+// Root endpoint for health checks
+app.get('/', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -61,4 +66,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log('Environment:', process.env.NODE_ENV);
   console.log('Storage directory:', BASE_STORAGE_DIR);
+  console.log('Allowed origins:', config.corsOrigins);
 });
