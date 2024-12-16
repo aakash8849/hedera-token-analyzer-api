@@ -5,74 +5,79 @@ import { config } from '../../config/config.js';
 import { formatTokenAmount } from '../utils/formatters.js';
 import { readCSV, writeCSV, ensureDirectoryExists } from '../utils/fileSystem.js';
 
-const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-        try {
-            return await axios(config);
-        } catch (error) {
-            if (error.response?.status === 429 || error.response?.status === 503) {
-                if (i === retries - 1) throw error;
-                await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
-                continue;
-            }
-            throw error;
-        }
+// Rate limiting queue with exponential backoff
+class RequestQueue {
+    constructor() {
+        this.queue = [];
+        this.processing = false;
+        this.lastRequestTime = Date.now();
+        this.consecutiveErrors = 0;
     }
-};
+
+    async add(requestConfig) {
+        return new Promise((resolve, reject) => {
+            this.queue.push({ config: requestConfig, resolve, reject });
+            if (!this.processing) {
+                this.process();
+            }
+        });
+    }
+
+    async process() {
+        if (this.processing || this.queue.length === 0) return;
+        this.processing = true;
+
+        while (this.queue.length > 0) {
+            const { config, resolve, reject } = this.queue[0];
+            
+            try {
+                // Enforce minimum delay between requests
+                const now = Date.now();
+                const timeSinceLastRequest = now - this.lastRequestTime;
+                const minDelay = Math.min(100 * Math.pow(2, this.consecutiveErrors), 5000);
+                
+                if (timeSinceLastRequest < minDelay) {
+                    await new Promise(r => setTimeout(r, minDelay - timeSinceLastRequest));
+                }
+
+                const response = await axios(config);
+                this.lastRequestTime = Date.now();
+                this.consecutiveErrors = 0;
+                this.queue.shift();
+                resolve(response);
+
+            } catch (error) {
+                if (error.response?.status === 429 || error.response?.status === 503) {
+                    this.consecutiveErrors++;
+                    const backoffDelay = Math.min(1000 * Math.pow(2, this.consecutiveErrors), 30000);
+                    console.log(`Rate limit hit, backing off for ${backoffDelay}ms...`);
+                    await new Promise(r => setTimeout(r, backoffDelay));
+                    continue;
+                }
+                
+                this.queue.shift();
+                reject(error);
+            }
+        }
+
+        this.processing = false;
+    }
+}
 
 export class TokenAnalyzer {
     constructor(tokenId) {
         this.tokenId = tokenId;
         this.tokenInfo = null;
         this.startTimestamp = Date.now();
-        this.lastRequestTime = Date.now();
-        this.requestCount = 0;
         this.sixMonthsAgoTimestamp = (Date.now() - (6 * 30 * 24 * 60 * 60 * 1000)) / 1000;
         this.tokenDir = join(config.storage.baseDir, `${tokenId}_token_data`);
-        this.requestQueue = [];
-        this.processingQueue = false;
-    }
-
-    async queueRequest(config) {
-        return new Promise((resolve, reject) => {
-            this.requestQueue.push({ config, resolve, reject });
-            if (!this.processingQueue) {
-                this.processQueue();
-            }
-        });
-    }
-
-    async processQueue() {
-        if (this.processingQueue || this.requestQueue.length === 0) return;
-        
-        this.processingQueue = true;
-        
-        while (this.requestQueue.length > 0) {
-            const { config, resolve, reject } = this.requestQueue.shift();
-            try {
-                const now = Date.now();
-                const timeSinceLastRequest = now - this.lastRequestTime;
-                
-                if (timeSinceLastRequest < 50) { // Ensure minimum 50ms between requests
-                    await new Promise(r => setTimeout(r, 50 - timeSinceLastRequest));
-                }
-                
-                const response = await axiosWithRetry(config);
-                this.lastRequestTime = Date.now();
-                resolve(response);
-                
-                await new Promise(r => setTimeout(r, 50)); // Add small delay between requests
-            } catch (error) {
-                reject(error);
-            }
-        }
-        
-        this.processingQueue = false;
+        this.requestQueue = new RequestQueue();
     }
 
     async fetchAccountTransactions(accountId) {
         let transactions = [];
         let timestamp = '';
+        let retryCount = 0;
         
         while (true) {
             try {
@@ -87,7 +92,7 @@ export class TokenAnalyzer {
                     params['timestamp'] = `lt:${timestamp}`;
                 }
 
-                const response = await this.queueRequest({ 
+                const response = await this.requestQueue.add({ 
                     method: 'get',
                     url,
                     params,
@@ -100,10 +105,13 @@ export class TokenAnalyzer {
                 transactions = transactions.concat(relevantTxs);
                 
                 timestamp = response.data.transactions[response.data.transactions.length - 1].consensus_timestamp;
+                retryCount = 0;
+
             } catch (error) {
-                if (error.response?.status === 503) {
-                    console.log(`Rate limit hit for ${accountId}, waiting before retry...`);
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                if (retryCount < config.mirrorNode.maxRetries) {
+                    retryCount++;
+                    console.log(`Error fetching transactions for ${accountId}, attempt ${retryCount}/${config.mirrorNode.maxRetries}`);
+                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount)));
                     continue;
                 }
                 throw new Error(`Failed to fetch transactions: ${error.message}`);
