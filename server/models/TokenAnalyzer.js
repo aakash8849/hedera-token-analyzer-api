@@ -2,6 +2,7 @@ import { join } from 'path';
 import fs from 'fs/promises';
 import axios from 'axios';
 import { config } from '../../config/config.js';
+import { requestQueue } from '../utils/requestQueue.js';
 
 export class TokenAnalyzer {
     constructor(tokenId) {
@@ -14,36 +15,38 @@ export class TokenAnalyzer {
         this.tokenDir = join(config.storage.baseDir, `${tokenId}_token_data`);
     }
 
-    async analyze() {
-        try {
-            console.log(`Starting analysis for token ${this.tokenId}`);
-            await this.ensureDirectoryExists(this.tokenDir);
-            console.log(`Created directory: ${this.tokenDir}`);
+        async analyze() {
+        return requestQueue.enqueue(this.tokenId, async () => {
+            try {
+                console.log(`Starting analysis for token ${this.tokenId}`);
+                await this.ensureDirectoryExists(this.tokenDir);
+                console.log(`Created directory: ${this.tokenDir}`);
 
-            // Get token info
-            this.tokenInfo = await this.getTokenInfo();
-            console.log(`Retrieved token info: ${this.tokenInfo.name} (${this.tokenInfo.symbol})`);
+                // Get token info
+                this.tokenInfo = await this.getTokenInfo();
+                console.log(`Retrieved token info: ${this.tokenInfo.name} (${this.tokenInfo.symbol})`);
 
-            // Fetch and save holders
-            console.log('Fetching holders...');
-            const holders = await this.fetchHolders();
-            await this.saveHolders(holders);
+                // Fetch and save holders
+                console.log('Fetching holders...');
+                const holders = await this.fetchHolders();
+                await this.saveHolders(holders);
 
-            // Fetch and save transactions
-            console.log('Fetching transactions...');
-            const transactions = await this.fetchTransactions(holders);
-            await this.saveTransactions(transactions);
+                // Fetch and save transactions
+                console.log('Fetching transactions...');
+                const transactions = await this.fetchTransactions(holders);
+                await this.saveTransactions(transactions);
 
-            return {
-                success: true,
-                tokenInfo: this.tokenInfo,
-                holders: holders.length,
-                transactions: transactions.length
-            };
-        } catch (error) {
-            console.error('Analysis failed:', error);
-            throw error;
-        }
+                return {
+                    success: true,
+                    tokenInfo: this.tokenInfo,
+                    holders: holders.length,
+                    transactions: transactions.length
+                };
+            } catch (error) {
+                console.error('Analysis failed:', error);
+                throw error;
+            }
+        });
     }
 
     async ensureDirectoryExists(dirPath) {
@@ -187,12 +190,12 @@ export class TokenAnalyzer {
                     retryCount = 0;
                 }
 
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
             } catch (error) {
                 if (retryCount < config.mirrorNode.maxRetries && 
                     (error.response?.status === 429 || error.response?.status === 503)) {
                     retryCount++;
-                    const delay = Math.min(1000 * Math.pow(2, retryCount), 30000);
+                    const delay = Math.min(2000 * Math.pow(2, retryCount), 30000);
                     console.log(`Rate limit hit, waiting ${delay}ms before retry...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                     continue;
@@ -203,7 +206,7 @@ export class TokenAnalyzer {
 
         return transactions;
     }
-
+}
     processTransactions(transactions, accountId) {
         return transactions.reduce((acc, tx) => {
             if (tx.token_transfers?.some(tt => tt.token_id === this.tokenId)) {
