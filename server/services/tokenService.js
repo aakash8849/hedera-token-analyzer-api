@@ -11,7 +11,8 @@ export async function getTokenInfo(tokenId) {
             name: response.data.name,
             symbol: response.data.symbol,
             decimals: response.data.decimals,
-            total_supply: response.data.total_supply
+            total_supply: response.data.total_supply,
+            treasury_account: response.data.treasury_account_id // Add treasury account
         };
     } catch (error) {
         throw new Error(`Failed to fetch token information: ${error.message}`);
