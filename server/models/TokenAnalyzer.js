@@ -77,33 +77,34 @@ export class TokenAnalyzer {
     }
 
     async fetchHolders() {
-        let holders = [];
-        let nextLink = '';
-        let retryCount = 0;
-        
-        do {
-            try {
-                await this.rateLimit();
-                const url = `${config.mirrorNode.baseUrl}/tokens/${this.tokenId}/balances${nextLink}`;
-                const response = await axios.get(url, { timeout: config.mirrorNode.timeout });
-                holders = holders.concat(response.data.balances);
-                nextLink = response.data.links?.next ? `?${response.data.links.next.split('?')[1]}` : '';
-                retryCount = 0;
-                console.log(`Fetched ${holders.length} holders`);
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (error) {
-                if (retryCount < config.mirrorNode.maxRetries) {
-                    retryCount++;
-                    console.error(`Error fetching holders (attempt ${retryCount}/${config.mirrorNode.maxRetries}): ${error.message}`);
-                    await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
-                    continue;
-                }
-                throw error;
-            }
-        } while (nextLink);
+    let holders = [];
+    let nextLink = '';
+    let retryCount = 0;
 
-        return holders;
-    }
+    do {
+        try {
+            const url = `${config.mirrorNode.baseUrl}/tokens/${this.tokenId}/balances${nextLink}`;
+            const response = await axios.get(url, { timeout: config.mirrorNode.timeout });
+            holders = holders.concat(response.data.balances);
+            nextLink = response.data.links?.next ? `?${response.data.links.next.split('?')[1]}` : '';
+            retryCount = 0;
+
+            process.stdout.write(`\rFetched ${holders.length} holders`);
+            await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (error) {
+            if (retryCount < config.mirrorNode.maxRetries) {
+                retryCount++;
+                console.error(`\nError fetching holders (attempt ${retryCount}/${config.mirrorNode.maxRetries}): ${error.message}`);
+                await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+                continue;
+            }
+            throw error;
+        }
+    } while (nextLink);
+
+    return holders;
+}
+
 
     async saveHolders(holders) {
         const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
@@ -117,25 +118,29 @@ export class TokenAnalyzer {
     }
 
     async fetchTransactions(holders) {
-        let allTransactions = [];
+    let allTransactions = [];
+    
+    for (let i = 0; i < holders.length; i += config.rateLimiting.holderBatchSize) {
+        const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
+        console.log(`\nProcessing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, holders.length)} of ${holders.length}`);
         
-        for (let i = 0; i < holders.length; i += config.rateLimiting.holderBatchSize) {
-            const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
-            console.log(`Processing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, holders.length)} of ${holders.length}`);
-            
-            for (const holder of batch) {
-                try {
-                    const transactions = await this.fetchAccountTransactions(holder.account);
-                    allTransactions = allTransactions.concat(transactions);
-                } catch (error) {
-                    console.error(`Error processing holder ${holder.account}:`, error.message);
-                }
-                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
-            }
+        const batchTransactions = await Promise.all(batch.map(async (holder) => {
+            console.log(`Processing account ${holder.account}...`);
+            return await this.fetchAccountTransactions(holder.account);
+        }));
+        
+        allTransactions = allTransactions.concat(batchTransactions.flat());
+        
+        if (allTransactions.length > 0) {
+            await this.saveTransactions(allTransactions);
         }
 
-        return allTransactions;
+        await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
     }
+
+    return allTransactions;
+}
+
 
     async rateLimit() {
         const now = Date.now();
