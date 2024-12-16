@@ -1,18 +1,28 @@
 export function formatTokenAmount(amount, decimals) {
-    // Convert to string to handle large numbers
-    const amountStr = amount.toString();
-    const decimalPower = Math.pow(10, decimals);
+    if (!amount || !decimals) return 0;
     
-    // Use string manipulation for precise decimal placement
-    if (amountStr.length <= decimals) {
+    try {
+        // Convert to string to handle large numbers
+        const amountStr = amount.toString();
+        
+        // Handle negative amounts
+        const isNegative = amountStr.startsWith('-');
+        const absAmount = isNegative ? amountStr.slice(1) : amountStr;
+        
         // Add leading zeros if needed
-        const paddedAmount = amountStr.padStart(decimals + 1, '0');
-        const integerPart = '0';
-        const decimalPart = paddedAmount.slice(0, decimals);
-        return parseFloat(`${integerPart}.${decimalPart}`);
-    } else {
-        const integerPart = amountStr.slice(0, -decimals);
-        const decimalPart = amountStr.slice(-decimals);
-        return parseFloat(`${integerPart}.${decimalPart}`);
+        const paddedAmount = absAmount.padStart(decimals + 1, '0');
+        
+        // Split into integer and decimal parts
+        const integerPart = paddedAmount.slice(0, -decimals) || '0';
+        const decimalPart = paddedAmount.slice(-decimals);
+        
+        // Combine parts and handle negative sign
+        const formattedAmount = `${isNegative ? '-' : ''}${integerPart}.${decimalPart}`;
+        
+        // Remove trailing zeros after decimal and unnecessary decimal point
+        return parseFloat(formattedAmount);
+    } catch (error) {
+        console.error('Error formatting token amount:', error);
+        return 0;
     }
 }
