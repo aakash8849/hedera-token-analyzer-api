@@ -15,9 +15,10 @@ export const config = {
     maxRetries: parseInt(process.env.MAX_RETRIES) || 3
   },
   rateLimiting: {
-    limit: parseInt(process.env.RATE_LIMIT) || 150,
-    batchSize: parseInt(process.env.BATCH_SIZE) || 50,
-    holderBatchSize: parseInt(process.env.HOLDER_BATCH_SIZE) || 25,
-    processingDelay: parseInt(process.env.PROCESSING_DELAY) || 200
+    limit: parseInt(process.env.RATE_LIMIT) || 10,
+    batchSize: parseInt(process.env.BATCH_SIZE) || 25,
+    holderBatchSize: parseInt(process.env.HOLDER_BATCH_SIZE) || 10,
+    processingDelay: parseInt(process.env.PROCESSING_DELAY) || 500,
+    minRequestInterval: parseInt(process.env.MIN_REQUEST_INTERVAL) || 100
   }
 };
