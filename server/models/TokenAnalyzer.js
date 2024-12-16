@@ -5,6 +5,21 @@ import { config } from '../../config/config.js';
 import { formatTokenAmount } from '../utils/formatters.js';
 import { readCSV, writeCSV, ensureDirectoryExists } from '../utils/fileSystem.js';
 
+const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await axios(config);
+        } catch (error) {
+            if (error.response?.status === 429 || error.response?.status === 503) {
+                if (i === retries - 1) throw error;
+                await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+                continue;
+            }
+            throw error;
+        }
+    }
+};
+
 export class TokenAnalyzer {
     constructor(tokenId) {
         this.tokenId = tokenId;
@@ -14,6 +29,88 @@ export class TokenAnalyzer {
         this.requestCount = 0;
         this.sixMonthsAgoTimestamp = (Date.now() - (6 * 30 * 24 * 60 * 60 * 1000)) / 1000;
         this.tokenDir = join(config.storage.baseDir, `${tokenId}_token_data`);
+        this.requestQueue = [];
+        this.processingQueue = false;
+    }
+
+    async queueRequest(config) {
+        return new Promise((resolve, reject) => {
+            this.requestQueue.push({ config, resolve, reject });
+            if (!this.processingQueue) {
+                this.processQueue();
+            }
+        });
+    }
+
+    async processQueue() {
+        if (this.processingQueue || this.requestQueue.length === 0) return;
+        
+        this.processingQueue = true;
+        
+        while (this.requestQueue.length > 0) {
+            const { config, resolve, reject } = this.requestQueue.shift();
+            try {
+                const now = Date.now();
+                const timeSinceLastRequest = now - this.lastRequestTime;
+                
+                if (timeSinceLastRequest < 50) { // Ensure minimum 50ms between requests
+                    await new Promise(r => setTimeout(r, 50 - timeSinceLastRequest));
+                }
+                
+                const response = await axiosWithRetry(config);
+                this.lastRequestTime = Date.now();
+                resolve(response);
+                
+                await new Promise(r => setTimeout(r, 50)); // Add small delay between requests
+            } catch (error) {
+                reject(error);
+            }
+        }
+        
+        this.processingQueue = false;
+    }
+
+    async fetchAccountTransactions(accountId) {
+        let transactions = [];
+        let timestamp = '';
+        
+        while (true) {
+            try {
+                let url = `${config.mirrorNode.baseUrl}/transactions`;
+                let params = {
+                    'account.id': accountId,
+                    'limit': config.rateLimiting.batchSize,
+                    'timestamp': `gt:${this.sixMonthsAgoTimestamp}`
+                };
+
+                if (timestamp) {
+                    params['timestamp'] = `lt:${timestamp}`;
+                }
+
+                const response = await this.queueRequest({ 
+                    method: 'get',
+                    url,
+                    params,
+                    timeout: config.mirrorNode.timeout 
+                });
+
+                if (!response.data?.transactions?.length) break;
+
+                const relevantTxs = this.processTransactions(response.data.transactions, accountId);
+                transactions = transactions.concat(relevantTxs);
+                
+                timestamp = response.data.transactions[response.data.transactions.length - 1].consensus_timestamp;
+            } catch (error) {
+                if (error.response?.status === 503) {
+                    console.log(`Rate limit hit for ${accountId}, waiting before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
+                throw new Error(`Failed to fetch transactions: ${error.message}`);
+            }
+        }
+
+        return transactions;
     }
 
     async analyze() {
