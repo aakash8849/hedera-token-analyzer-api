@@ -2,129 +2,22 @@ import { join } from 'path';
 import fs from 'fs/promises';
 import axios from 'axios';
 import { config } from '../../config/config.js';
-import { formatTokenAmount } from '../utils/formatters.js';
-import { readCSV, writeCSV, ensureDirectoryExists } from '../utils/fileSystem.js';
-
-// Rate limiting queue with exponential backoff
-class RequestQueue {
-    constructor() {
-        this.queue = [];
-        this.processing = false;
-        this.lastRequestTime = Date.now();
-        this.consecutiveErrors = 0;
-    }
-
-    async add(requestConfig) {
-        return new Promise((resolve, reject) => {
-            this.queue.push({ config: requestConfig, resolve, reject });
-            if (!this.processing) {
-                this.process();
-            }
-        });
-    }
-
-    async process() {
-        if (this.processing || this.queue.length === 0) return;
-        this.processing = true;
-
-        while (this.queue.length > 0) {
-            const { config, resolve, reject } = this.queue[0];
-            
-            try {
-                // Enforce minimum delay between requests
-                const now = Date.now();
-                const timeSinceLastRequest = now - this.lastRequestTime;
-                const minDelay = Math.min(100 * Math.pow(2, this.consecutiveErrors), 5000);
-                
-                if (timeSinceLastRequest < minDelay) {
-                    await new Promise(r => setTimeout(r, minDelay - timeSinceLastRequest));
-                }
-
-                const response = await axios(config);
-                this.lastRequestTime = Date.now();
-                this.consecutiveErrors = 0;
-                this.queue.shift();
-                resolve(response);
-
-            } catch (error) {
-                if (error.response?.status === 429 || error.response?.status === 503) {
-                    this.consecutiveErrors++;
-                    const backoffDelay = Math.min(1000 * Math.pow(2, this.consecutiveErrors), 30000);
-                    console.log(`Rate limit hit, backing off for ${backoffDelay}ms...`);
-                    await new Promise(r => setTimeout(r, backoffDelay));
-                    continue;
-                }
-                
-                this.queue.shift();
-                reject(error);
-            }
-        }
-
-        this.processing = false;
-    }
-}
 
 export class TokenAnalyzer {
     constructor(tokenId) {
         this.tokenId = tokenId;
         this.tokenInfo = null;
         this.startTimestamp = Date.now();
+        this.lastRequestTime = Date.now();
+        this.requestCount = 0;
         this.sixMonthsAgoTimestamp = (Date.now() - (6 * 30 * 24 * 60 * 60 * 1000)) / 1000;
         this.tokenDir = join(config.storage.baseDir, `${tokenId}_token_data`);
-        this.requestQueue = new RequestQueue();
-    }
-
-    async fetchAccountTransactions(accountId) {
-        let transactions = [];
-        let timestamp = '';
-        let retryCount = 0;
-        
-        while (true) {
-            try {
-                let url = `${config.mirrorNode.baseUrl}/transactions`;
-                let params = {
-                    'account.id': accountId,
-                    'limit': config.rateLimiting.batchSize,
-                    'timestamp': `gt:${this.sixMonthsAgoTimestamp}`
-                };
-
-                if (timestamp) {
-                    params['timestamp'] = `lt:${timestamp}`;
-                }
-
-                const response = await this.requestQueue.add({ 
-                    method: 'get',
-                    url,
-                    params,
-                    timeout: config.mirrorNode.timeout 
-                });
-
-                if (!response.data?.transactions?.length) break;
-
-                const relevantTxs = this.processTransactions(response.data.transactions, accountId);
-                transactions = transactions.concat(relevantTxs);
-                
-                timestamp = response.data.transactions[response.data.transactions.length - 1].consensus_timestamp;
-                retryCount = 0;
-
-            } catch (error) {
-                if (retryCount < config.mirrorNode.maxRetries) {
-                    retryCount++;
-                    console.log(`Error fetching transactions for ${accountId}, attempt ${retryCount}/${config.mirrorNode.maxRetries}`);
-                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount)));
-                    continue;
-                }
-                throw new Error(`Failed to fetch transactions: ${error.message}`);
-            }
-        }
-
-        return transactions;
     }
 
     async analyze() {
         try {
             console.log(`Starting analysis for token ${this.tokenId}`);
-            await ensureDirectoryExists(this.tokenDir);
+            await this.ensureDirectoryExists(this.tokenDir);
             console.log(`Created directory: ${this.tokenDir}`);
 
             // Get token info
@@ -141,8 +34,6 @@ export class TokenAnalyzer {
             const transactions = await this.fetchTransactions(holders);
             await this.saveTransactions(transactions);
 
-            console.log(`Analysis complete! Found ${holders.length} holders and ${transactions.length} transactions`);
-
             return {
                 success: true,
                 tokenInfo: this.tokenInfo,
@@ -152,6 +43,14 @@ export class TokenAnalyzer {
         } catch (error) {
             console.error('Analysis failed:', error);
             throw error;
+        }
+    }
+
+    async ensureDirectoryExists(dirPath) {
+        try {
+            await fs.access(dirPath);
+        } catch {
+            await fs.mkdir(dirPath, { recursive: true });
         }
     }
 
@@ -172,19 +71,34 @@ export class TokenAnalyzer {
         }
     }
 
+    formatTokenAmount(amount) {
+        if (!amount || !this.tokenInfo?.decimals) return 0;
+        return amount / Math.pow(10, this.tokenInfo.decimals);
+    }
+
     async fetchHolders() {
         let holders = [];
         let nextLink = '';
+        let retryCount = 0;
         
         do {
             try {
+                await this.rateLimit();
                 const url = `${config.mirrorNode.baseUrl}/tokens/${this.tokenId}/balances${nextLink}`;
                 const response = await axios.get(url, { timeout: config.mirrorNode.timeout });
                 holders = holders.concat(response.data.balances);
                 nextLink = response.data.links?.next ? `?${response.data.links.next.split('?')[1]}` : '';
+                retryCount = 0;
+                console.log(`Fetched ${holders.length} holders`);
                 await new Promise(resolve => setTimeout(resolve, 100));
             } catch (error) {
-                throw new Error(`Failed to fetch holders: ${error.message}`);
+                if (retryCount < config.mirrorNode.maxRetries) {
+                    retryCount++;
+                    console.error(`Error fetching holders (attempt ${retryCount}/${config.mirrorNode.maxRetries}): ${error.message}`);
+                    await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+                    continue;
+                }
+                throw error;
             }
         } while (nextLink);
 
@@ -195,10 +109,10 @@ export class TokenAnalyzer {
         const holdersPath = join(this.tokenDir, `${this.tokenId}_holders.csv`);
         const holdersData = holders.map(holder => [
             holder.account,
-            formatTokenAmount(holder.balance, this.tokenInfo.decimals)
+            this.formatTokenAmount(holder.balance)
         ]);
         
-        await writeCSV(holdersPath, ['Account', 'Balance'], holdersData);
+        await this.writeCSV(holdersPath, ['Account', 'Balance'], holdersData);
         console.log(`Saved ${holders.length} holders`);
     }
 
@@ -209,23 +123,38 @@ export class TokenAnalyzer {
             const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
             console.log(`Processing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, holders.length)} of ${holders.length}`);
             
-            const batchTransactions = await Promise.all(
-                batch.map(holder => this.fetchAccountTransactions(holder.account))
-            );
-            
-            allTransactions = allTransactions.concat(batchTransactions.flat());
-            await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
+            for (const holder of batch) {
+                try {
+                    const transactions = await this.fetchAccountTransactions(holder.account);
+                    allTransactions = allTransactions.concat(transactions);
+                } catch (error) {
+                    console.error(`Error processing holder ${holder.account}:`, error.message);
+                }
+                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
+            }
         }
 
         return allTransactions;
     }
 
+    async rateLimit() {
+        const now = Date.now();
+        const elapsed = now - this.lastRequestTime;
+        const delay = Math.max(0, config.rateLimiting.minRequestInterval - elapsed);
+        if (delay > 0) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        this.lastRequestTime = Date.now();
+    }
+
     async fetchAccountTransactions(accountId) {
         let transactions = [];
         let timestamp = '';
+        let retryCount = 0;
         
         while (true) {
             try {
+                await this.rateLimit();
                 let url = `${config.mirrorNode.baseUrl}/transactions`;
                 let params = {
                     'account.id': accountId,
@@ -248,9 +177,22 @@ export class TokenAnalyzer {
                 transactions = transactions.concat(relevantTxs);
                 
                 timestamp = response.data.transactions[response.data.transactions.length - 1].consensus_timestamp;
+
+                if (retryCount > 0) {
+                    retryCount = 0;
+                }
+
                 await new Promise(resolve => setTimeout(resolve, 100));
             } catch (error) {
-                throw new Error(`Failed to fetch transactions: ${error.message}`);
+                if (retryCount < config.mirrorNode.maxRetries && 
+                    (error.response?.status === 429 || error.response?.status === 503)) {
+                    retryCount++;
+                    const delay = Math.min(1000 * Math.pow(2, retryCount), 30000);
+                    console.log(`Rate limit hit, waiting ${delay}ms before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+                throw error;
             }
         }
 
@@ -275,9 +217,9 @@ export class TokenAnalyzer {
                             timestamp: new Date(parseInt(tx.consensus_timestamp) * 1000).toISOString(),
                             transaction_id: tx.transaction_id,
                             sender_account: sender.account,
-                            sender_amount: formatTokenAmount(Math.abs(sender.amount), this.tokenInfo.decimals),
+                            sender_amount: this.formatTokenAmount(Math.abs(sender.amount)),
                             receiver_account: receivedTransfer.account,
-                            receiver_amount: formatTokenAmount(receivedTransfer.amount, this.tokenInfo.decimals),
+                            receiver_amount: this.formatTokenAmount(receivedTransfer.amount),
                             token_symbol: this.tokenInfo.symbol,
                             memo: tx.memo_base64 ? Buffer.from(tx.memo_base64, 'base64').toString() : '',
                             fee_hbar: (tx.charged_tx_fee || 0) / 100000000
@@ -287,6 +229,16 @@ export class TokenAnalyzer {
             }
             return acc;
         }, []);
+    }
+
+    async writeCSV(filePath, headers, data) {
+        const content = [headers.join(',')];
+        data.forEach(row => {
+            content.push(row.map(cell => 
+                typeof cell === 'string' && cell.includes(',') ? `"${cell}"` : cell
+            ).join(','));
+        });
+        await fs.writeFile(filePath, content.join('\n'));
     }
 
     async saveTransactions(transactions) {
@@ -315,7 +267,7 @@ export class TokenAnalyzer {
             tx.fee_hbar
         ]);
 
-        await writeCSV(transactionsPath, headers, rows);
+        await this.writeCSV(transactionsPath, headers, rows);
         console.log(`Saved ${transactions.length} transactions`);
     }
 
@@ -325,8 +277,8 @@ export class TokenAnalyzer {
             const transactionsPath = join(this.tokenDir, `${this.tokenId}_transactions.csv`);
 
             const [holdersData, transactionsData] = await Promise.all([
-                readCSV(holdersPath),
-                readCSV(transactionsPath)
+                fs.readFile(holdersPath, 'utf8'),
+                fs.readFile(transactionsPath, 'utf8')
             ]);
 
             return {
