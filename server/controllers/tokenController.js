@@ -68,3 +68,19 @@ export async function getAnalysisStatus(req, res) {
         res.status(500).json({ error: error.message });
     }
 }
+
+export async function visualizeToken(req, res) {
+    try {
+        const { tokenId } = req.params;
+        if (!tokenId || !/^\d+\.\d+\.\d+$/.test(tokenId)) {
+            return res.status(400).json({ error: 'Invalid token ID format' });
+        }
+
+        const analyzer = new TokenAnalyzer(tokenId);
+        const data = await analyzer.getVisualizationData();
+        res.json(data);
+    } catch (error) {
+        console.error('Visualization error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}
