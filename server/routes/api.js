@@ -1,10 +1,11 @@
 import express from 'express';
-import { analyzeToken, visualizeToken } from '../controllers/tokenController.js';
+import { analyzeToken, getAnalysisStatus, visualizeToken } from '../controllers/tokenController.js';
 
 const router = express.Router();
 
-// These routes will be mounted under /api
+// Analysis endpoints
 router.post('/analyze', analyzeToken);
+router.get('/analyze/:tokenId/status', getAnalysisStatus);
 router.get('/visualize/:tokenId', visualizeToken);
 
 export default router;
