@@ -4,7 +4,7 @@ import axios from 'axios';
 import { config } from '../../config/config.js';
 
 export class TokenAnalyzer {
-    constructor(tokenId) {
+    constructor(tokenId, stats) {
         this.tokenId = tokenId;
         this.tokenInfo = null;
         this.startTimestamp = Date.now();
@@ -17,6 +17,7 @@ export class TokenAnalyzer {
             timeout: config.mirrorNode.timeout,
             headers: { 'Accept-Encoding': 'gzip' }
         });
+        this.stats = stats;
     }
 
     async analyze() {
@@ -117,6 +118,7 @@ export class TokenAnalyzer {
                 holders = holders.concat(response.data.balances);
                 nextLink = response.data.links?.next ? `?${response.data.links.next.split('?')[1]}` : '';
                 retryCount = 0;
+                this.stats.updateHolders(holders.length);
                 console.log(`Fetched ${holders.length} holders`);
                 await new Promise(resolve => setTimeout(resolve, 100));
             } catch (error) {
@@ -154,41 +156,51 @@ export class TokenAnalyzer {
         await fs.writeFile(filePath, content.join('\n'));
     }
 
-    async fetchTransactions(holders) {
-        let allTransactions = 0;
-        const batchSize = config.rateLimiting.holderBatchSize;
-        const batches = Math.ceil(holders.length / batchSize);
+async fetchTransactions(holders) {
+    const batchSize = config.rateLimiting.holderBatchSize;
+    const batches = Math.ceil(holders.length / batchSize);
+    
+    this.stats.setBatchProgress(0, batches);
+    console.log(`Processing ${holders.length} holders in ${batches} batches`);
+    
+    for (let i = 0; i < holders.length; i += batchSize) {
+        const batch = holders.slice(i, i + batchSize);
+        const currentBatch = Math.floor(i/batchSize) + 1;
+        this.stats.setBatchProgress(currentBatch, batches);
         
-        console.log(`Processing ${holders.length} holders in ${batches} batches`);
+        console.log(`Processing batch ${currentBatch}/${batches}`);
         
-        for (let i = 0; i < holders.length; i += batchSize) {
-            const batch = holders.slice(i, i + batchSize);
-            console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${batches}`);
+        try {
+            const batchTransactions = await Promise.all(
+                batch.map(async holder => {
+                    const transactions = await this.fetchAccountTransactions(holder.account);
+                    this.stats.incrementProcessedHolders();
+                    if (transactions.length > 0) {
+                        this.stats.incrementHoldersWithTransactions();
+                    }
+                    return transactions;
+                })
+            );
             
-            try {
-                const batchTransactions = await Promise.all(
-                    batch.map(holder => this.fetchAccountTransactions(holder.account))
-                );
-                
-                const newTransactions = batchTransactions.flat();
-                
-                if (newTransactions.length > 0) {
-                    await this.appendTransactionsToFile(newTransactions);
+            const newTransactions = batchTransactions.flat();
+            
+            if (newTransactions.length > 0) {
+                for (const tx of newTransactions) {
+                    this.stats.addTransaction(tx.transaction_id);
                 }
-                
-                allTransactions += newTransactions.length;
-                
-                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
-                
-            } catch (error) {
-                console.error(`Error processing batch: ${error.message}`);
-                continue;
+                await this.appendTransactionsToFile(newTransactions);
             }
+            
+            await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
+            
+        } catch (error) {
+            console.error(`Error processing batch: ${error.message}`);
+            continue;
         }
-
-        return allTransactions;
     }
 
+    return this.stats.transactions.total;
+}
     async fetchAccountTransactions(accountId) {
         const transactions = [];
         let timestamp = '';
