@@ -12,6 +12,11 @@ export class TokenAnalyzer {
         this.requestCount = 0;
         this.sixMonthsAgoTimestamp = (Date.now() - (6 * 30 * 24 * 60 * 60 * 1000)) / 1000;
         this.tokenDir = join(config.storage.baseDir, `${tokenId}_token_data`);
+        this.axiosInstance = axios.create({
+            baseURL: config.mirrorNode.baseUrl,
+            timeout: config.mirrorNode.timeout,
+            headers: { 'Accept-Encoding': 'gzip' }
+        });
     }
 
     async analyze() {
@@ -31,14 +36,13 @@ export class TokenAnalyzer {
 
             // Fetch and save transactions
             console.log('Fetching transactions...');
-            const transactions = await this.fetchTransactions(holders);
-            await this.saveTransactions(transactions);
+            const transactionsCount = await this.fetchTransactions(holders);
 
             return {
                 success: true,
                 tokenInfo: this.tokenInfo,
                 holders: holders.length,
-                transactions: transactions.length
+                transactions: transactionsCount
             };
         } catch (error) {
             console.error('Analysis failed:', error);
@@ -90,6 +94,16 @@ export class TokenAnalyzer {
         }
     }
 
+    async rateLimit() {
+        const now = Date.now();
+        const elapsed = now - this.lastRequestTime;
+        const delay = Math.max(0, config.rateLimiting.minRequestInterval - elapsed);
+        if (delay > 0) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        this.lastRequestTime = Date.now();
+    }
+
     async fetchHolders() {
         let holders = [];
         let nextLink = '';
@@ -130,118 +144,6 @@ export class TokenAnalyzer {
         console.log(`Saved ${holders.length} holders`);
     }
 
-    async fetchTransactions(holders) {
-        let allTransactions = [];
-        
-        for (let i = 0; i < holders.length; i += config.rateLimiting.holderBatchSize) {
-            const batch = holders.slice(i, i + config.rateLimiting.holderBatchSize);
-            console.log(`Processing holders ${i + 1}-${Math.min(i + config.rateLimiting.holderBatchSize, holders.length)} of ${holders.length}`);
-            
-            for (const holder of batch) {
-                try {
-                    console.log(`Processing account ${holder.account}...`);
-                    const transactions = await this.fetchAccountTransactions(holder.account);
-                    allTransactions = allTransactions.concat(transactions);
-                } catch (error) {
-                    console.error(`Error processing holder ${holder.account}:`, error.message);
-                }
-                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
-            }
-        }
-
-        return allTransactions;
-    }
-
-    async rateLimit() {
-        const now = Date.now();
-        const elapsed = now - this.lastRequestTime;
-        const delay = Math.max(0, config.rateLimiting.minRequestInterval - elapsed);
-        if (delay > 0) {
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-        this.lastRequestTime = Date.now();
-    }
-
-    async fetchAccountTransactions(accountId) {
-        let transactions = [];
-        let timestamp = '';
-        let retryCount = 0;
-        
-        while (true) {
-            try {
-                await this.rateLimit();
-                let url = `${config.mirrorNode.baseUrl}/transactions`;
-                let params = {
-                    'account.id': accountId,
-                    'limit': config.rateLimiting.batchSize,
-                    'timestamp': `gt:${this.sixMonthsAgoTimestamp}`
-                };
-
-                if (timestamp) {
-                    params['timestamp'] = `lt:${timestamp}`;
-                }
-
-                const response = await axios.get(url, { 
-                    params,
-                    timeout: config.mirrorNode.timeout 
-                });
-
-                if (!response.data?.transactions?.length) break;
-
-                const relevantTxs = [];
-                for (const tx of response.data.transactions) {
-                    if (tx.token_transfers?.some(tt => tt.token_id === this.tokenId)) {
-                        const transfers = tx.token_transfers.filter(tt => tt.token_id === this.tokenId);
-                        const receivedTransfers = transfers.filter(tt => 
-                            tt.account === accountId && tt.amount > 0
-                        );
-
-                        for (const receivedTransfer of receivedTransfers) {
-                            const sender = transfers.find(tt => 
-                                tt.amount < 0 && Math.abs(tt.amount) >= receivedTransfer.amount
-                            );
-
-                            if (sender) {
-                                relevantTxs.push({
-                                    timestamp: new Date(parseInt(tx.consensus_timestamp) * 1000).toISOString(),
-                                    transaction_id: tx.transaction_id,
-                                    sender_account: sender.account,
-                                    sender_amount: this.formatTokenAmount(Math.abs(sender.amount)),
-                                    receiver_account: receivedTransfer.account,
-                                    receiver_amount: this.formatTokenAmount(receivedTransfer.amount),
-                                    token_symbol: this.tokenInfo.symbol,
-                                    memo: tx.memo_base64 ? Buffer.from(tx.memo_base64, 'base64').toString() : '',
-                                    fee_hbar: (tx.charged_tx_fee || 0) / 100000000
-                                });
-                            }
-                        }
-                    }
-                }
-
-                transactions = transactions.concat(relevantTxs);
-                timestamp = response.data.transactions[response.data.transactions.length - 1].consensus_timestamp;
-
-                if (retryCount > 0) {
-                    retryCount = 0;
-                }
-
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (error) {
-                if (retryCount < config.mirrorNode.maxRetries && 
-                    (error.response?.status === 429 || error.response?.status === 503)) {
-                    retryCount++;
-                    const delay = Math.min(1000 * Math.pow(2, retryCount), 30000);
-                    console.log(`Rate limit hit, waiting ${delay}ms before retry...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    continue;
-                }
-                throw error;
-            }
-        }
-
-        return transactions;
-    }
-
     async writeCSV(filePath, headers, data) {
         const content = [headers.join(',')];
         data.forEach(row => {
@@ -252,20 +154,130 @@ export class TokenAnalyzer {
         await fs.writeFile(filePath, content.join('\n'));
     }
 
-    async saveTransactions(transactions) {
-        const transactionsPath = join(this.tokenDir, `${this.tokenId}_transactions.csv`);
-        const headers = [
-            'Timestamp',
-            'Transaction ID',
-            'Sender Account',
-            'Total Sent Amount',
-            'Receiver Account',
-            'Receiver Amount',
-            'Token Symbol',
-            'Memo',
-            'Fee (HBAR)'
-        ];
+    async fetchTransactions(holders) {
+        let allTransactions = 0;
+        const batchSize = config.rateLimiting.holderBatchSize;
+        const batches = Math.ceil(holders.length / batchSize);
+        
+        console.log(`Processing ${holders.length} holders in ${batches} batches`);
+        
+        for (let i = 0; i < holders.length; i += batchSize) {
+            const batch = holders.slice(i, i + batchSize);
+            console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${batches}`);
+            
+            try {
+                const batchTransactions = await Promise.all(
+                    batch.map(holder => this.fetchAccountTransactions(holder.account))
+                );
+                
+                const newTransactions = batchTransactions.flat();
+                
+                if (newTransactions.length > 0) {
+                    await this.appendTransactionsToFile(newTransactions);
+                }
+                
+                allTransactions += newTransactions.length;
+                
+                await new Promise(resolve => setTimeout(resolve, config.rateLimiting.processingDelay));
+                
+            } catch (error) {
+                console.error(`Error processing batch: ${error.message}`);
+                continue;
+            }
+        }
 
+        return allTransactions;
+    }
+
+    async fetchAccountTransactions(accountId) {
+        const transactions = [];
+        let timestamp = '';
+        let retryCount = 0;
+        
+        while (true) {
+            try {
+                await this.rateLimit();
+                
+                const params = {
+                    'account.id': accountId,
+                    'limit': config.rateLimiting.batchSize,
+                    'timestamp': timestamp 
+                        ? `lt:${timestamp}` 
+                        : `gt:${this.sixMonthsAgoTimestamp}`
+                };
+
+                const { data } = await this.axiosInstance.get('/transactions', { params });
+                
+                if (!data?.transactions?.length) break;
+
+                for (let i = 0; i < data.transactions.length; i += 100) {
+                    const chunk = data.transactions.slice(i, i + 100);
+                    const relevantTxs = this.processTransactionChunk(chunk, accountId);
+                    transactions.push(...relevantTxs);
+                }
+
+                timestamp = data.transactions[data.transactions.length - 1].consensus_timestamp;
+                retryCount = 0;
+
+                await new Promise(resolve => setTimeout(resolve, 25));
+
+            } catch (error) {
+                if (retryCount < config.mirrorNode.maxRetries && 
+                    (error.response?.status === 429 || error.response?.status === 503)) {
+                    retryCount++;
+                    await this.handleRateLimit(retryCount);
+                    continue;
+                }
+                break;
+            }
+        }
+
+        return transactions;
+    }
+
+    async handleRateLimit(retryCount) {
+        const delay = Math.min(1000 * Math.pow(1.5, retryCount), 15000);
+        console.log(`Rate limit hit, waiting ${delay}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    processTransactionChunk(transactions, accountId) {
+        return transactions.reduce((acc, tx) => {
+            if (!tx.token_transfers?.some(tt => tt.token_id === this.tokenId)) {
+                return acc;
+            }
+
+            const transfers = tx.token_transfers.filter(tt => tt.token_id === this.tokenId);
+            const receivedTransfers = transfers.filter(tt => 
+                tt.account === accountId && tt.amount > 0
+            );
+
+            receivedTransfers.forEach(receivedTransfer => {
+                const sender = transfers.find(tt => 
+                    tt.amount < 0 && Math.abs(tt.amount) >= receivedTransfer.amount
+                );
+
+                if (sender) {
+                    acc.push({
+                        timestamp: new Date(parseInt(tx.consensus_timestamp) * 1000).toISOString(),
+                        transaction_id: tx.transaction_id,
+                        sender_account: sender.account,
+                        sender_amount: this.formatTokenAmount(Math.abs(sender.amount)),
+                        receiver_account: receivedTransfer.account,
+                        receiver_amount: this.formatTokenAmount(receivedTransfer.amount),
+                        token_symbol: this.tokenInfo.symbol,
+                        memo: tx.memo_base64 ? Buffer.from(tx.memo_base64, 'base64').toString() : '',
+                        fee_hbar: (tx.charged_tx_fee || 0) / 100000000
+                    });
+                }
+            });
+
+            return acc;
+        }, []);
+    }
+
+    async appendTransactionsToFile(transactions) {
+        const filePath = join(this.tokenDir, `${this.tokenId}_transactions.csv`);
         const rows = transactions.map(tx => [
             tx.timestamp,
             tx.transaction_id,
@@ -276,10 +288,9 @@ export class TokenAnalyzer {
             tx.token_symbol,
             tx.memo,
             tx.fee_hbar
-        ]);
+        ].join(','));
 
-        await this.writeCSV(transactionsPath, headers, rows);
-        console.log(`Saved ${transactions.length} transactions`);
+        await fs.appendFile(filePath, rows.join('\n') + '\n', { flag: 'a' });
     }
 
     async getVisualizationData() {
