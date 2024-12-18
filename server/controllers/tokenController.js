@@ -69,6 +69,20 @@ export async function getAnalysisStatus(req, res) {
     }
 }
 
+export async function getOngoingAnalyses(req, res) {
+    try {
+        const analyses = Array.from(activeAnalyses.entries()).map(([tokenId, stats]) => ({
+            tokenId,
+            progress: stats.getProgress()
+        }));
+        
+        res.json(analyses);
+    } catch (error) {
+        console.error('Error fetching ongoing analyses:', error);
+        res.status(500).json({ error: error.message });
+    }
+}
+
 export async function visualizeToken(req, res) {
     try {
         const { tokenId } = req.params;
