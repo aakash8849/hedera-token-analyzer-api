@@ -1,39 +1,92 @@
-import axios from 'axios';
-import { config } from '../../config/config.js';
+import { Holder } from '../models/Holder.js';
+import { Transaction } from '../models/Transaction.js';
 
-export async function getTokenInfo(tokenId) {
-    try {
-        const response = await axios.get(
-            `${config.mirrorNode.baseUrl}/tokens/${tokenId}`,
-            { timeout: config.mirrorNode.timeout }
-        );
-        return {
-            name: response.data.name,
-            symbol: response.data.symbol,
-            decimals: response.data.decimals,
-            total_supply: response.data.total_supply,
-            treasury_account: response.data.treasury_account_id // Add treasury account
-        };
-    } catch (error) {
-        throw new Error(`Failed to fetch token information: ${error.message}`);
-    }
+export async function saveHolders(tokenId, holders) {
+  try {
+    // Find the treasury (holder with highest balance)
+    const treasury = holders.reduce((max, h) => h.balance > max.balance ? h : max, holders[0]);
+
+    // Prepare bulk operations
+    const operations = holders.map(holder => ({
+      updateOne: {
+        filter: { tokenId, account: holder.account },
+        update: {
+          $set: {
+            balance: holder.balance,
+            isTreasury: holder.account === treasury.account
+          }
+        },
+        upsert: true
+      }
+    }));
+
+    await Holder.bulkWrite(operations);
+    return true;
+  } catch (error) {
+    console.error('Error saving holders:', error);
+    throw error;
+  }
 }
 
-export async function fetchHolders(tokenId) {
-    let holders = [];
-    let nextLink = '';
-    
-    do {
-        try {
-            const url = `${config.mirrorNode.baseUrl}/tokens/${tokenId}/balances${nextLink}`;
-            const response = await axios.get(url, { timeout: config.mirrorNode.timeout });
-            holders = holders.concat(response.data.balances);
-            nextLink = response.data.links?.next ? `?${response.data.links.next.split('?')[1]}` : '';
-            await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (error) {
-            throw new Error(`Failed to fetch holders: ${error.message}`);
-        }
-    } while (nextLink);
+export async function saveTransactions(tokenId, transactions) {
+  try {
+    // Get treasury account
+    const treasury = await Holder.findOne({ tokenId, isTreasury: true });
+    const treasuryId = treasury?.account;
 
-    return holders;
+    // Prepare bulk operations
+    const operations = transactions.map(tx => ({
+      updateOne: {
+        filter: {
+          tokenId,
+          timestamp: new Date(tx.timestamp),
+          sender: tx.sender_account,
+          receiver: tx.receiver_account
+        },
+        update: {
+          $set: {
+            amount: tx.sender_amount,
+            involvesTreasury: tx.sender_account === treasuryId || tx.receiver_account === treasuryId
+          }
+        },
+        upsert: true
+      }
+    }));
+
+    await Transaction.bulkWrite(operations);
+    return true;
+  } catch (error) {
+    console.error('Error saving transactions:', error);
+    throw error;
+  }
+}
+
+export async function getVisualizationData(tokenId) {
+  try {
+    const [holders, transactions] = await Promise.all([
+      Holder.find({ tokenId }).lean(),
+      Transaction.find({ tokenId })
+        .sort({ timestamp: -1 })
+        .limit(10000) // Limit to last 10000 transactions for performance
+        .lean()
+    ]);
+
+    return {
+      holders: holders.map(h => ({
+        account: h.account,
+        balance: h.balance,
+        isTreasury: h.isTreasury
+      })),
+      transactions: transactions.map(tx => ({
+        timestamp: tx.timestamp,
+        sender: tx.sender,
+        amount: tx.amount,
+        receiver: tx.receiver,
+        involvesTreasury: tx.involvesTreasury
+      }))
+    };
+  } catch (error) {
+    console.error('Error getting visualization data:', error);
+    throw error;
+  }
 }
