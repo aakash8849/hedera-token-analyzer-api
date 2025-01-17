@@ -1,5 +1,6 @@
 import { TokenAnalyzer } from '../models/TokenAnalyzer.js';
 import { AnalysisStats } from '../models/AnalysisStats.js';
+import { saveTokenInfo, saveHolders, saveTransactions, getVisualizationData } from '../services/tokenService.js';
 
 const activeAnalyses = new Map();
 
@@ -26,7 +27,19 @@ export async function analyzeToken(req, res) {
         // Start analysis in background
         const analyzer = new TokenAnalyzer(tokenId, stats);
         analyzer.analyze()
-            .then(result => {
+            .then(async result => {
+                // Save data to MongoDB
+                await saveTokenInfo({
+                    tokenId,
+                    name: result.tokenInfo.name,
+                    symbol: result.tokenInfo.symbol,
+                    decimals: result.tokenInfo.decimals,
+                    totalSupply: result.tokenInfo.total_supply
+                });
+
+                await saveHolders(tokenId, result.holders);
+                await saveTransactions(tokenId, result.transactions);
+
                 const finalStats = stats.getProgress();
                 activeAnalyses.delete(tokenId);
                 return finalStats;
@@ -90,8 +103,7 @@ export async function visualizeToken(req, res) {
             return res.status(400).json({ error: 'Invalid token ID format' });
         }
 
-        const analyzer = new TokenAnalyzer(tokenId);
-        const data = await analyzer.getVisualizationData();
+        const data = await getVisualizationData(tokenId);
         res.json(data);
     } catch (error) {
         console.error('Visualization error:', error);
