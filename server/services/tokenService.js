@@ -1,5 +1,20 @@
+import { Token } from '../models/Token.js';
 import { Holder } from '../models/Holder.js';
 import { Transaction } from '../models/Transaction.js';
+
+export async function saveTokenInfo(tokenData) {
+  try {
+    const token = await Token.findOneAndUpdate(
+      { tokenId: tokenData.tokenId },
+      tokenData,
+      { upsert: true, new: true }
+    );
+    return token;
+  } catch (error) {
+    console.error('Error saving token info:', error);
+    throw error;
+  }
+}
 
 export async function saveHolders(tokenId, holders) {
   try {
