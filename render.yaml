@@ -9,8 +9,8 @@ services:
         value: production
       - key: PORT
         value: 10000
-      - key: STORAGE_DIR
-        value: /data
+      - key: MONGODB_URI
+        sync: false # This means it will be set manually in the dashboard
       - key: MIRROR_NODE_URL
         value: https://mainnet-public.mirrornode.hedera.com/api/v1
       - key: MIRROR_NODE_TIMEOUT
@@ -32,4 +32,4 @@ services:
       mountPath: /data
       sizeGB: 1
     healthCheckPath: /
-    autoDeploy: true 
+    autoDeploy: true
