@@ -19,9 +19,10 @@ export async function saveTokenInfo(tokenData) {
 
 export async function saveHolders(tokenId, holdersData) {
   try {
-    // Ensure holdersData is an array
+    // Ensure holdersData is properly structured
     if (!holdersData || !Array.isArray(holdersData.balances)) {
-      throw new Error('Holders must be an array');
+      console.error('Invalid holders data structure:', holdersData);
+      throw new Error('Invalid holders data structure');
     }
 
     const conn = await getTokenConnection(tokenId);
@@ -29,8 +30,8 @@ export async function saveHolders(tokenId, holdersData) {
 
     // Find the treasury (holder with highest balance)
     const treasury = holdersData.balances.reduce((max, h) => 
-      (h.balance > max.balance) ? h : max, 
-      { balance: -Infinity }
+      (parseInt(h.balance) > parseInt(max.balance)) ? h : max, 
+      { balance: '0' }
     );
 
     // Prepare bulk operations
@@ -61,7 +62,8 @@ export async function saveHolders(tokenId, holdersData) {
 export async function saveTransactions(tokenId, transactions) {
   try {
     if (!Array.isArray(transactions)) {
-      throw new Error('Transactions must be an array');
+      console.error('Invalid transactions data structure:', transactions);
+      throw new Error('Invalid transactions data structure');
     }
 
     const conn = await getTokenConnection(tokenId);
@@ -77,19 +79,19 @@ export async function saveTransactions(tokenId, transactions) {
       updateOne: {
         filter: {
           tokenId,
-          transactionId: tx.transactionId
+          transactionId: tx.transaction_id
         },
         update: {
           $set: {
-            timestamp: tx.timestamp,
-            sender: tx.sender,
-            receiver: tx.receiver,
-            amount: tx.amount,
-            receiverAmount: tx.receiverAmount,
-            tokenSymbol: tx.tokenSymbol,
+            timestamp: new Date(tx.timestamp),
+            sender: tx.sender_account,
+            receiver: tx.receiver_account,
+            amount: parseFloat(tx.sender_amount),
+            receiverAmount: parseFloat(tx.receiver_amount),
+            tokenSymbol: tx.token_symbol,
             memo: tx.memo,
-            feeHbar: tx.feeHbar,
-            involvesTreasury: tx.sender === treasuryId || tx.receiver === treasuryId
+            feeHbar: parseFloat(tx.fee_hbar),
+            involvesTreasury: tx.sender_account === treasuryId || tx.receiver_account === treasuryId
           }
         },
         upsert: true
