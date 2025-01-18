@@ -35,10 +35,15 @@ export async function getTokenConnection(tokenId) {
       useUnifiedTopology: true
     });
 
+    // Import models dynamically
+    const Token = (await import('../models/Token.js')).default;
+    const Holder = (await import('../models/Holder.js')).default;
+    const Transaction = (await import('../models/Transaction.js')).default;
+
     // Create models specific to this connection
-    conn.model('Token', require('../models/Token').schema);
-    conn.model('Holder', require('../models/Holder').schema);
-    conn.model('Transaction', require('../models/Transaction').schema);
+    conn.model('Token', Token.schema);
+    conn.model('Holder', Holder.schema);
+    conn.model('Transaction', Transaction.schema);
 
     connections.set(tokenId, conn);
     console.log(`Connected to database for token ${tokenId}`);
