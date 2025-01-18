@@ -28,21 +28,31 @@ export async function analyzeToken(req, res) {
         const analyzer = new TokenAnalyzer(tokenId, stats);
         analyzer.analyze()
             .then(async result => {
-                // Save data to MongoDB
-                await saveTokenInfo({
-                    tokenId,
-                    name: result.tokenInfo.name,
-                    symbol: result.tokenInfo.symbol,
-                    decimals: result.tokenInfo.decimals,
-                    totalSupply: result.tokenInfo.total_supply
-                });
+                try {
+                    // Save token info
+                    await saveTokenInfo({
+                        tokenId,
+                        name: result.tokenInfo.name,
+                        symbol: result.tokenInfo.symbol,
+                        decimals: result.tokenInfo.decimals,
+                        totalSupply: result.tokenInfo.total_supply
+                    });
 
-                await saveHolders(tokenId, result.holders);
-                await saveTransactions(tokenId, result.transactions);
+                    // Save holders data
+                    await saveHolders(tokenId, result.holders);
 
-                const finalStats = stats.getProgress();
-                activeAnalyses.delete(tokenId);
-                return finalStats;
+                    // Save transactions data if available
+                    if (result.transactions && result.transactions.length > 0) {
+                        await saveTransactions(tokenId, result.transactions);
+                    }
+
+                    const finalStats = stats.getProgress();
+                    activeAnalyses.delete(tokenId);
+                    return finalStats;
+                } catch (error) {
+                    console.error('Error saving data:', error);
+                    throw error;
+                }
             })
             .catch(error => {
                 console.error('Analysis failed:', error);
