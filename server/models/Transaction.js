@@ -32,4 +32,6 @@ const transactionSchema = new mongoose.Schema({
 // Compound index for faster queries
 transactionSchema.index({ tokenId: 1, timestamp: -1 });
 
-export const Transaction = mongoose.model('Transaction', transactionSchema);
+const Transaction = mongoose.model('Transaction', transactionSchema);
+export default Transaction;
+export { transactionSchema };
