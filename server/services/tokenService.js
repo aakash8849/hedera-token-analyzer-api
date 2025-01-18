@@ -17,9 +17,10 @@ export async function saveTokenInfo(tokenData) {
   }
 }
 
-export async function saveHolders(tokenId, holders) {
+export async function saveHolders(tokenId, holdersData) {
   try {
-    if (!Array.isArray(holders)) {
+    // Ensure holdersData is an array
+    if (!holdersData || !Array.isArray(holdersData.balances)) {
       throw new Error('Holders must be an array');
     }
 
@@ -27,13 +28,13 @@ export async function saveHolders(tokenId, holders) {
     const Holder = conn.model('Holder');
 
     // Find the treasury (holder with highest balance)
-    const treasury = holders.reduce((max, h) => 
+    const treasury = holdersData.balances.reduce((max, h) => 
       (h.balance > max.balance) ? h : max, 
       { balance: -Infinity }
     );
 
     // Prepare bulk operations
-    const operations = holders.map(holder => ({
+    const operations = holdersData.balances.map(holder => ({
       updateOne: {
         filter: { tokenId, account: holder.account },
         update: {
