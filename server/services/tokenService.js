@@ -18,8 +18,15 @@ export async function saveTokenInfo(tokenData) {
 
 export async function saveHolders(tokenId, holders) {
   try {
+    if (!Array.isArray(holders)) {
+      throw new Error('Holders must be an array');
+    }
+
     // Find the treasury (holder with highest balance)
-    const treasury = holders.reduce((max, h) => h.balance > max.balance ? h : max, holders[0]);
+    const treasury = holders.reduce((max, h) => 
+      (h.balance > max.balance) ? h : max, 
+      { balance: -Infinity }
+    );
 
     // Prepare bulk operations
     const operations = holders.map(holder => ({
@@ -35,7 +42,10 @@ export async function saveHolders(tokenId, holders) {
       }
     }));
 
-    await Holder.bulkWrite(operations);
+    if (operations.length > 0) {
+      await Holder.bulkWrite(operations);
+    }
+    
     return true;
   } catch (error) {
     console.error('Error saving holders:', error);
@@ -45,6 +55,10 @@ export async function saveHolders(tokenId, holders) {
 
 export async function saveTransactions(tokenId, transactions) {
   try {
+    if (!Array.isArray(transactions)) {
+      throw new Error('Transactions must be an array');
+    }
+
     // Get treasury account
     const treasury = await Holder.findOne({ tokenId, isTreasury: true });
     const treasuryId = treasury?.account;
@@ -54,21 +68,29 @@ export async function saveTransactions(tokenId, transactions) {
       updateOne: {
         filter: {
           tokenId,
-          timestamp: new Date(tx.timestamp),
-          sender: tx.sender_account,
-          receiver: tx.receiver_account
+          transactionId: tx.transactionId
         },
         update: {
           $set: {
-            amount: tx.sender_amount,
-            involvesTreasury: tx.sender_account === treasuryId || tx.receiver_account === treasuryId
+            timestamp: tx.timestamp,
+            sender: tx.sender,
+            receiver: tx.receiver,
+            amount: tx.amount,
+            receiverAmount: tx.receiverAmount,
+            tokenSymbol: tx.tokenSymbol,
+            memo: tx.memo,
+            feeHbar: tx.feeHbar,
+            involvesTreasury: tx.sender === treasuryId || tx.receiver === treasuryId
           }
         },
         upsert: true
       }
     }));
 
-    await Transaction.bulkWrite(operations);
+    if (operations.length > 0) {
+      await Transaction.bulkWrite(operations);
+    }
+
     return true;
   } catch (error) {
     console.error('Error saving transactions:', error);
@@ -78,6 +100,7 @@ export async function saveTransactions(tokenId, transactions) {
 
 export async function getVisualizationData(tokenId) {
   try {
+    // Fetch data from MongoDB
     const [holders, transactions] = await Promise.all([
       Holder.find({ tokenId }).lean(),
       Transaction.find({ tokenId })
@@ -86,6 +109,7 @@ export async function getVisualizationData(tokenId) {
         .lean()
     ]);
 
+    // Return data in the format expected by the visualization
     return {
       holders: holders.map(h => ({
         account: h.account,
