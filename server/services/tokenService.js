@@ -1,9 +1,10 @@
-import { Token } from '../models/Token.js';
-import { Holder } from '../models/Holder.js';
-import { Transaction } from '../models/Transaction.js';
+import { getTokenConnection } from '../config/database.js';
 
 export async function saveTokenInfo(tokenData) {
   try {
+    const conn = await getTokenConnection(tokenData.tokenId);
+    const Token = conn.model('Token');
+
     const token = await Token.findOneAndUpdate(
       { tokenId: tokenData.tokenId },
       tokenData,
@@ -21,6 +22,9 @@ export async function saveHolders(tokenId, holders) {
     if (!Array.isArray(holders)) {
       throw new Error('Holders must be an array');
     }
+
+    const conn = await getTokenConnection(tokenId);
+    const Holder = conn.model('Holder');
 
     // Find the treasury (holder with highest balance)
     const treasury = holders.reduce((max, h) => 
@@ -58,6 +62,10 @@ export async function saveTransactions(tokenId, transactions) {
     if (!Array.isArray(transactions)) {
       throw new Error('Transactions must be an array');
     }
+
+    const conn = await getTokenConnection(tokenId);
+    const Transaction = conn.model('Transaction');
+    const Holder = conn.model('Holder');
 
     // Get treasury account
     const treasury = await Holder.findOne({ tokenId, isTreasury: true });
@@ -100,12 +108,16 @@ export async function saveTransactions(tokenId, transactions) {
 
 export async function getVisualizationData(tokenId) {
   try {
+    const conn = await getTokenConnection(tokenId);
+    const Holder = conn.model('Holder');
+    const Transaction = conn.model('Transaction');
+
     // Fetch data from MongoDB
     const [holders, transactions] = await Promise.all([
       Holder.find({ tokenId }).lean(),
       Transaction.find({ tokenId })
         .sort({ timestamp: -1 })
-        .limit(10000) // Limit to last 10000 transactions for performance
+        .limit(10000)
         .lean()
     ]);
 
