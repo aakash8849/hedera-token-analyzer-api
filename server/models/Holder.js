@@ -23,4 +23,6 @@ const holderSchema = new mongoose.Schema({
 // Compound index for faster queries
 holderSchema.index({ tokenId: 1, account: 1 }, { unique: true });
 
-export const Holder = mongoose.model('Holder', holderSchema);
+const Holder = mongoose.model('Holder', holderSchema);
+export default Holder;
+export { holderSchema };
